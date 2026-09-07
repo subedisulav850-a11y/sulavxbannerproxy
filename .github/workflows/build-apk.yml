@@ -1,153 +1,65 @@
 name: Build Sulav Proxy APK
 
 on:
-  push:
-    branches: ["main", "master"]
   workflow_dispatch:
+  push:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
-    name: Build debug APK
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Java 17
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
-          cache: gradle
+          java-version: '17'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android SDK 35
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
-
-      - name: Setup Gradle 8.11.1
+      - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.11.1"
+          gradle-version: '8.11.1'
 
-      - name: Build APK
-        run: gradle --no-daemon assembleDebug
+      - name: Build Debug APK
+        run: |
+          gradle --no-daemon assembleDebug
 
       - name: Verify APK
         run: |
-          test -f app/build/outputs/apk/debug/app-debug.apk
-          ls -lh app/build/outputs/apk/debug/app-debug.apk
+          if [ ! -f app/build/outputs/apk/debug/app-debug.apk ]; then
+            echo "APK was not generated!"
+            exit 1
+          fi
 
-      - name: Upload APK as Release Asset
+          echo "BUILD SUCCESSFUL"
+          echo "APK: app/build/outputs/apk/debug/app-debug.apk"
+
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: SulavProxy-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
-          retention-days: 30
 
-      - name: Generate Direct Download Link
-        id: download_link
-        run: |
-          RUN_ID=${{ github.run_id }}
-          REPO=${{ github.repository }}
-          ARTIFACT_NAME="SulavProxy-debug-apk"
-          
-          # GitHub Artifact Download Link
-          DIRECT_URL="https://github.com/$REPO/actions/runs/$RUN_ID/artifacts/$ARTIFACT_NAME"
-          
-          echo "DIRECT_DOWNLOAD_URL=$DIRECT_URL" >> $GITHUB_OUTPUT
-          echo "APK_PATH=app/build/outputs/apk/debug/app-debug.apk" >> $GITHUB_OUTPUT
-          
-          echo "=============================================="
-          echo "BUILD SUCCESSFUL"
-          echo "APK: app/build/outputs/apk/debug/app-debug.apk"
-          echo "DIRECT DOWNLOAD LINK: $DIRECT_URL"
-          echo "=============================================="
-
-      - name: Create Release with APK
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
-        uses: softprops/action-gh-release@v1
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0.${{ github.run_number }}
-          name: "Sulav Proxy v1.0.${{ github.run_number }}"
+          name: Sulav Proxy v1.0.${{ github.run_number }}
           body: |
-            ## 📱 Sulav Proxy APK
-            
-            ### 🔗 Direct Download
-            **[Download APK](${{ steps.download_link.outputs.DIRECT_DOWNLOAD_URL }})**
-            
-            ### 📦 Installation
-            1. Download the APK file
-            2. Enable "Install from unknown sources" in your Android settings
-            3. Install and enjoy!
-            
-            ### ⚠️ Note
-            This is a debug build for testing purposes.
-          files: app/build/outputs/apk/debug/app-debug.apk
-          generate_release_notes: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            Sulav Proxy APK
 
-      - name: Print Download Links
-        env:
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          ARTIFACT_URL: "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts"
-        run: |
-          echo "=============================================="
-          echo "📱 SULAV PROXY APK BUILD COMPLETE"
-          echo "=============================================="
-          echo "📦 Artifact Download:"
-          echo "   $ARTIFACT_URL"
-          echo ""
-          echo "📦 Direct Artifact Link (click):"
-          echo "   ${{ steps.download_link.outputs.DIRECT_DOWNLOAD_URL }}"
-          echo ""
-          echo "📦 Alternative Download (Release):"
-          echo "   https://github.com/${{ github.repository }}/releases"
-          echo "=============================================="
-          
-          {
-            echo "# 📱 Sulav Proxy APK Build Successful ✅"
-            echo
-            echo "## 🔗 Download APK"
-            echo
-            echo "### Option 1: Direct Artifact Download"
-            echo "[📥 Download SulavProxy-debug-apk](${{ steps.download_link.outputs.DIRECT_DOWNLOAD_URL }})"
-            echo
-            echo "### Option 2: GitHub Release"
-            echo "Check the [Releases](https://github.com/${{ github.repository }}/releases) section"
-            echo
-            echo "### Option 3: GitHub Actions Page"
-            echo "[Open Actions Run]($RUN_URL)"
-            echo
-            echo "## 📋 Installation Instructions"
-            echo "1. Download the APK file using any option above"
-            echo "2. Enable **Install from unknown sources** on your Android device"
-            echo "3. Open the APK file and install"
-            echo
-            echo "## ⚠️ Note"
-            echo "This is a **debug build** for testing purposes."
-          } >> "$GITHUB_STEP_SUMMARY"
+            Build: ${{ github.run_number }}
+            Commit: ${{ github.sha }}
 
-      - name: Upload to Nightly Release (optional)
-        if: github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@v1
-        with:
-          name: "Nightly Build - ${{ github.run_id }}"
-          tag_name: nightly-${{ github.run_id }}
-          prerelease: true
+            Debug APK attached below.
           files: app/build/outputs/apk/debug/app-debug.apk
-          body: |
-            ## 🚀 Nightly Build
-            
-            **Build ID:** ${{ github.run_id }}
-            **Date:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')
-            
-            [Download APK](${{ steps.download_link.outputs.DIRECT_DOWNLOAD_URL }})
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

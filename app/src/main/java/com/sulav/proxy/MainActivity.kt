@@ -37,7 +37,8 @@ class MainActivity:Activity(){
  private var currentScreen="CAPTURE"
  private val screenStack=ArrayDeque<String>()
  private var lastBackAt=0L
-  private var pendingSaveText:String?=null
+ private var handlingBack=false
+ private var pendingSaveText:String?=null
  private val mainHandler=Handler(Looper.getMainLooper())
  override fun onCreate(b:Bundle?){
   super.onCreate(b)
@@ -50,63 +51,45 @@ class MainActivity:Activity(){
   registerBackHandler()
  }
 
- private fun registerBackHandler(){
-  if(Build.VERSION.SDK_INT>=33){
-   onBackInvokedDispatcher.registerOnBackInvokedCallback(
-    android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT
-   ){ handleBack() }
+ @Suppress("DEPRECATION")
+ override fun onBackPressed(){
+  if(handlingBack) return
+  handlingBack=true
+  try { handleBackNow() } finally {
+   mainHandler.postDelayed({ handlingBack=false }, 250L)
   }
  }
 
- override fun onDestroy(){
-  mainHandler.removeCallbacksAndMessages(null)
-  executor.shutdownNow()
-  super.onDestroy()
- }
-
- @Suppress("DEPRECATION")
- override fun onBackPressed(){
-  if(Build.VERSION.SDK_INT<33){ handleBack() }
- }
-
- private fun handleBack(){
-  mainHandler.post {
-   // Let an open text field/IME consume the first Back press.
-   val focused=window.currentFocus
-   if(focused is android.widget.EditText){
-    val imm=getSystemService(INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
-    imm.hideSoftInputFromWindow(focused.windowToken,0)
-    focused.clearFocus()
-    return@post
+ private fun handleBackNow(){
+  val focused=window.currentFocus
+  if(focused is android.widget.EditText){
+   val imm=getSystemService(INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+   imm.hideSoftInputFromWindow(focused.windowToken,0)
+   focused.clearFocus()
+   return
+  }
+  if(screenStack.isNotEmpty()){
+   val previous=screenStack.removeLast()
+   when(previous){
+    "CAPTURE" -> showCapture(false)
+    "CAPTURE_LOG" -> showCaptureLog(false)
+    "DETAIL" -> showCaptureLog(false)
+    "REQUEST" -> showRequest(false)
+    "DECODER" -> showDecoder(false)
+    "DECODED" -> showDecoded(lastDecodedBytes,false)
+    "UPDATES" -> showUpdates(false)
+    "ACCOUNT" -> showAccount(false)
+    else -> { screenStack.clear(); showCapture(false) }
    }
-
-   // Pop exactly one app screen. Never jump directly to a hard-coded page.
-   if(screenStack.isNotEmpty()){
-    val previous=screenStack.removeLast()
-    when(previous){
-     "CAPTURE" -> showCapture(false)
-     "CAPTURE_LOG" -> showCaptureLog(false)
-     "DETAIL" -> showCaptureLog(false)
-     "REQUEST" -> showRequest(false)
-     "DECODER" -> showDecoder(false)
-     "DECODED" -> showDecoded(lastDecodedBytes,false)
-     "UPDATES" -> showUpdates(false)
-     "ACCOUNT" -> showAccount(false)
-     else -> showCapture(false)
-    }
-    lastBackAt=0L
-    return@post
-   }
-
-   // Main screen: standard double-back-to-exit, with no automatic navigation.
-   val now=System.currentTimeMillis()
-   if(now-lastBackAt<1800L){
-    lastBackAt=0L
-    finish()
-   }else{
-    lastBackAt=now
-    toast("Press back again to exit")
-   }
+   return
+  }
+  val now=System.currentTimeMillis()
+  if(now-lastBackAt<1800L){
+   lastBackAt=0L
+   finish()
+  }else{
+   lastBackAt=now
+   toast("Press back again to exit")
   }
  }
  private fun buildShell(){
@@ -137,7 +120,7 @@ class MainActivity:Activity(){
   val i=Intent(this,ProxyService::class.java).apply{action=ProxyService.ACTION_START;putExtra(ProxyService.EXTRA_TARGET,target);putExtra(ProxyService.EXTRA_PORT,proxyPort);putExtra(ProxyService.EXTRA_OVERLAY,overlayEnabled)}
   if (android.os.Build.VERSION.SDK_INT >= 26) startForegroundService(i) else startService(i); proxyRunning=true; updatePacketCount(); if(currentScreen=="ACCOUNT") showAccount(false) else showCapture(false)
  }
- private fun stopProxy(){stopService(Intent(this,ProxyService::class.java).apply{action=ProxyService.ACTION_STOP});proxyRunning=false;if(currentScreen=="ACCOUNT") showAccount(false) else if(currentScreen=="CAPTURE") showCapture(false)}
+ private fun stopProxy(){stopService(Intent(this,ProxyService::class.java).apply{action=ProxyService.ACTION_STOP});proxyRunning=false;if(currentScreen=="ACCOUNT") showAccount(false) else showCapture(false)}
  private fun showCaptureLog(push:Boolean=true){if(push&&currentScreen!="CAPTURE_LOG")screenStack.addLast(currentScreen);currentScreen="CAPTURE_LOG";reset("CAPTURED PACKETS","${captures.size} request(s)");captures.asReversed().forEach{cap->val c=card();addTextTo(c,"${cap.method}  ${cap.status}",14f,if(cap.status in 200..399)GREEN else RED,true);addTextTo(c,cap.url,12f,TEXT);addTextTo(c,"${cap.requestBytes} B → ${cap.responseBytes} B",11f,MUTED);c.addView(button("VIEW DETAIL"){showDetail(cap)});content.addView(c)}}
  private fun showDetail(cap:Capture){
   if(currentScreen!="DETAIL")screenStack.addLast(currentScreen)

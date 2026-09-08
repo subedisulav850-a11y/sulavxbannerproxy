@@ -37,6 +37,7 @@ class MainActivity:Activity(){
  private var currentScreen="CAPTURE"
  private var lastBackAt=0L
  private var backCallbackRegistered=false
+ private var pendingSaveText:String?=null
  private val mainHandler=Handler(Looper.getMainLooper())
  override fun onCreate(b:Bundle?){
   super.onCreate(b)
@@ -116,7 +117,98 @@ class MainActivity:Activity(){
  }
  private fun stopProxy(){stopService(Intent(this,ProxyService::class.java).apply{action=ProxyService.ACTION_STOP});proxyRunning=false;showCapture()}
  private fun showCaptureLog(){currentScreen="CAPTURE_LOG";reset("CAPTURED PACKETS","${captures.size} request(s)");captures.asReversed().forEach{cap->val c=card();addTextTo(c,"${cap.method}  ${cap.status}",14f,if(cap.status in 200..399)GREEN else RED,true);addTextTo(c,cap.url,12f,TEXT);addTextTo(c,"${cap.requestBytes} B → ${cap.responseBytes} B",11f,MUTED);c.addView(button("VIEW DETAIL"){showDetail(cap)});content.addView(c)}}
- private fun showDetail(cap:Capture){currentScreen="DETAIL";reset("REQUEST DETAIL","${cap.method} ${cap.url}");val c=card();addTextTo(c,"STATUS ${cap.status}",14f,if(cap.status in 200..399)GREEN else RED,true);addTextTo(c,"HEADERS",12f,CYAN,true);addTextTo(c,cap.headers.ifBlank{"—"},11f,TEXT);addTextTo(c,"REQUEST HEX",12f,CYAN,true);addTextTo(c,cap.requestHex.ifBlank{"—"},10f,TEXT);addTextTo(c,"RESPONSE HEX",12f,CYAN,true);addTextTo(c,cap.responseHex.ifBlank{"—"},10f,TEXT);addTextTo(c,"HTTPS payload remains encrypted; only tunnel metadata and byte counts are shown.",10f,MUTED);content.addView(c)}
+ private fun showDetail(cap:Capture){
+  currentScreen="DETAIL"
+  reset("REQUEST DETAIL","${cap.method} ${cap.url}")
+  val c=card()
+
+  addTextTo(c,"STATUS ${cap.status}",14f,if(cap.status in 200..399)GREEN else RED,true)
+  c.addView(copyButton("COPY STATUS","${cap.status}"))
+
+  addTextTo(c,"URL",12f,CYAN,true)
+  addTextTo(c,cap.url,11f,TEXT)
+  c.addView(copyButton("COPY URL",cap.url))
+
+  addTextTo(c,"HEADERS",12f,CYAN,true)
+  addTextTo(c,cap.headers.ifBlank{"—"},11f,TEXT)
+  c.addView(copyButton("COPY HEADERS",cap.headers))
+
+  addTextTo(c,"REQUEST HEX",12f,CYAN,true)
+  addTextTo(c,cap.requestHex.ifBlank{"—"},10f,TEXT)
+  c.addView(copyButton("COPY REQUEST HEX",cap.requestHex))
+
+  addTextTo(c,"RESPONSE HEX",12f,CYAN,true)
+  addTextTo(c,cap.responseHex.ifBlank{"—"},10f,TEXT)
+  c.addView(copyButton("COPY RESPONSE HEX",cap.responseHex))
+
+  addTextTo(c,"SIZE",12f,CYAN,true)
+  addTextTo(c,"Request: ${cap.requestBytes} B    Response: ${cap.responseBytes} B",11f,TEXT)
+
+  c.addView(copyButton("COPY ALL","""METHOD: ${cap.method}
+STATUS: ${cap.status}
+URL: ${cap.url}
+
+HEADERS:
+${cap.headers}
+
+REQUEST HEX:
+${cap.requestHex}
+
+RESPONSE HEX:
+${cap.responseHex}
+
+REQUEST BYTES: ${cap.requestBytes}
+RESPONSE BYTES: ${cap.responseBytes}"""))
+
+  c.addView(button("SAVE TO FILE"){
+    pendingSaveText="""METHOD: ${cap.method}
+STATUS: ${cap.status}
+URL: ${cap.url}
+
+HEADERS:
+${cap.headers}
+
+REQUEST HEX:
+${cap.requestHex}
+
+RESPONSE HEX:
+${cap.responseHex}
+
+REQUEST BYTES: ${cap.requestBytes}
+RESPONSE BYTES: ${cap.responseBytes}
+"""
+    val safeName=cap.method.lowercase(Locale.US)+"_capture.txt"
+    startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply{
+      addCategory(Intent.CATEGORY_OPENABLE)
+      type="text/plain"
+      putExtra(Intent.EXTRA_TITLE,safeName)
+    },2001)
+  })
+
+  addTextTo(c,"HTTPS payload remains encrypted; only tunnel metadata and byte counts are shown.",10f,MUTED)
+  content.addView(c)
+ }
+
+ private fun copyButton(title:String,value:String):Button=button(title){
+  val clipboard=getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+  clipboard.setPrimaryClip(android.content.ClipData.newPlainText(title,value))
+  toast("Copied")
+ }
+
+ override fun onActivityResult(requestCode:Int,resultCode:Int,data:Intent?){
+  super.onActivityResult(requestCode,resultCode,data)
+  if(requestCode==2001 && resultCode==RESULT_OK && data?.data!=null){
+    val text=pendingSaveText ?: return
+    try{
+      contentResolver.openOutputStream(data.data!!)?.use{it.write(text.toByteArray(Charsets.UTF_8))}
+      toast("Saved to file")
+    }catch(e:Exception){
+      toast("Save failed: ${e.message ?: "error"}")
+    }finally{
+      pendingSaveText=null
+    }
+  }
+ }
  private fun showRequest(){currentScreen="REQUEST";reset("REQUEST SEND","Send a request to an endpoint you control.");val c=card();label("REQUEST BLOCK");val m=Spinner(this).apply{adapter=ArrayAdapter(this@MainActivity,android.R.layout.simple_spinner_dropdown_item,arrayOf("GET","POST","PUT","DELETE"))};c.addView(m);val u=edit("URL",target);c.addView(u);val h=edit("Headers (Name: Value per line)","",true);c.addView(h);val body=edit("Payload / body","",true);c.addView(body);c.addView(button("SEND REQUEST"){sendRequest(m.selectedItem.toString(),u.text.toString().trim(),h.text.toString(),body.text.toString())});content.addView(c);addText("For safety, this sender does not extract authentication tokens or modify third-party game traffic.",12f,MUTED,false,20,12)}
  private fun sendRequest(method:String,urlText:String,headerText:String,bodyText:String){executor.execute{var conn:HttpURLConnection?=null;try{conn=URL(urlText).openConnection() as HttpURLConnection;conn!!.requestMethod=method;conn!!.connectTimeout=12000;conn!!.readTimeout=12000;headerText.lines().forEach{p->val i=p.indexOf(':');if(i>0)conn!!.setRequestProperty(p.substring(0,i).trim(),p.substring(i+1).trim())};if(method!="GET"&&method!="DELETE"){conn!!.doOutput=true;conn!!.outputStream.use{it.write(bodyText.toByteArray())}};val status=conn!!.responseCode;val stream=if(status>=400)conn!!.errorStream else conn!!.inputStream;val bytes=stream?.let{BufferedInputStream(it).use{inp->readAll(inp)}}?:ByteArray(0);val safe=headerText.lines().joinToString("\n"){if(it.lowercase(Locale.US).startsWith("authorization:"))"Authorization: [REDACTED]" else it};val cap=Capture(method,urlText,status,hex(bodyText.toByteArray(),512),hex(bytes,512),safe);synchronized(captures){captures.add(cap)};runOnUiThread{updatePacketCount();toast("Response $status");if(currentScreen=="REQUEST")showDetail(cap)}}catch(e:Exception){runOnUiThread{toast("Request failed: ${e.message?:"error"}")}}finally{conn?.disconnect()}}}
  private fun showDecoder(){currentScreen="DECODER";reset("PROTOBUF DECODER","Decode generic response bytes supplied by you.");val c=card();label("RESPONSE HEX");val i=edit("08 03 12 …","",true);c.addView(i);c.addView(button("DECODE"){showDecoded(decodeHex(i.text.toString()))});c.addView(button("CLEAR"){i.setText("")});content.addView(c);addText("DECODED JSON / FALLBACK",12f,CYAN,true,20,16);addText("—",12f,TEXT,false,20,6)}

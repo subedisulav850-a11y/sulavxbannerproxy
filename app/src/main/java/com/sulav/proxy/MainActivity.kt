@@ -48,7 +48,6 @@ class MainActivity:Activity(){
   buildShell()
   screenStack.clear()
   showCapture(false)
-  registerBackHandler()
  }
 
  @Suppress("DEPRECATION")

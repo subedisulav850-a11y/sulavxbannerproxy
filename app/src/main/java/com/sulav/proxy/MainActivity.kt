@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
+import android.provider.DocumentsContract
 import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Bundle
@@ -39,12 +40,15 @@ class MainActivity:Activity(){
  private var lastBackAt=0L
  private var handlingBack=false
  private var pendingSaveText:String?=null
+ private var localConfigText="{\n  \"serverLoginUrl\": \"http://127.0.0.1:8080/\"\n}"
+ private var localConfigUri:Uri?=null
  private val mainHandler=Handler(Looper.getMainLooper())
  override fun onCreate(b:Bundle?){
   super.onCreate(b)
   window.statusBarColor=PURPLE
   window.navigationBarColor=Color.BLACK
   target=getPreferences(0).getString("target",target)?:target
+  getPreferences(0).getString("local_config_uri",null)?.let{runCatching{localConfigUri=Uri.parse(it)}}
   buildShell()
   screenStack.clear()
   showCapture(false)
@@ -78,6 +82,7 @@ class MainActivity:Activity(){
     "DECODED" -> showDecoded(lastDecodedBytes,false)
     "UPDATES" -> showUpdates(false)
     "ACCOUNT" -> showAccount(false)
+    "LOCALCONFIG" -> showLocalConfig(false)
     else -> { screenStack.clear(); showCapture(false) }
    }
    return
@@ -117,81 +122,16 @@ class MainActivity:Activity(){
  private fun updatePacketCount(){if(::packetCountView.isInitialized)packetCountView.text="${captures.size} packets"}
  private fun startProxy(){
   val i=Intent(this,ProxyService::class.java).apply{action=ProxyService.ACTION_START;putExtra(ProxyService.EXTRA_TARGET,target);putExtra(ProxyService.EXTRA_PORT,proxyPort);putExtra(ProxyService.EXTRA_OVERLAY,overlayEnabled)}
-  if (android.os.Build.VERSION.SDK_INT >= 26) startForegroundService(i) else startService(i); proxyRunning=true; updatePacketCount(); if(currentScreen=="ACCOUNT") showAccount(false) else showCapture(false)
+  if(android.os.Build.VERSION.SDK_INT>=26) startForegroundService(i) else startService(i)
+  proxyRunning=true
+  updatePacketCount()
+  refreshCurrentScreen()
  }
- private fun stopProxy(){stopService(Intent(this,ProxyService::class.java).apply{action=ProxyService.ACTION_STOP});proxyRunning=false;if(currentScreen=="ACCOUNT") showAccount(false) else showCapture(false)}
- private fun showCaptureLog(push:Boolean=true){if(push&&currentScreen!="CAPTURE_LOG")screenStack.addLast(currentScreen);currentScreen="CAPTURE_LOG";reset("CAPTURED PACKETS","${captures.size} request(s)");captures.asReversed().forEach{cap->val c=card();addTextTo(c,"${cap.method}  ${cap.status}",14f,if(cap.status in 200..399)GREEN else RED,true);addTextTo(c,cap.url,12f,TEXT);addTextTo(c,"${cap.requestBytes} B → ${cap.responseBytes} B",11f,MUTED);c.addView(button("VIEW DETAIL"){showDetail(cap)});content.addView(c)}}
- private fun showDetail(cap:Capture){
-  if(currentScreen!="DETAIL")screenStack.addLast(currentScreen)
-  currentScreen="DETAIL"
-  reset("REQUEST DETAIL","${cap.method} ${cap.url}")
-  val c=card()
-
-  addTextTo(c,"STATUS ${cap.status}",14f,if(cap.status in 200..399)GREEN else RED,true)
-  c.addView(copyButton("COPY STATUS","${cap.status}"))
-
-  addTextTo(c,"URL",12f,CYAN,true)
-  addTextTo(c,cap.url,11f,TEXT)
-  c.addView(copyButton("COPY URL",cap.url))
-
-  addTextTo(c,"HEADERS",12f,CYAN,true)
-  addTextTo(c,cap.headers.ifBlank{"—"},11f,TEXT)
-  c.addView(copyButton("COPY HEADERS",cap.headers))
-
-  addTextTo(c,"REQUEST HEX",12f,CYAN,true)
-  addTextTo(c,cap.requestHex.ifBlank{"—"},10f,TEXT)
-  c.addView(copyButton("COPY REQUEST HEX",cap.requestHex))
-
-  addTextTo(c,"RESPONSE HEX",12f,CYAN,true)
-  addTextTo(c,cap.responseHex.ifBlank{"—"},10f,TEXT)
-  c.addView(copyButton("COPY RESPONSE HEX",cap.responseHex))
-
-  addTextTo(c,"SIZE",12f,CYAN,true)
-  addTextTo(c,"Request: ${cap.requestBytes} B    Response: ${cap.responseBytes} B",11f,TEXT)
-
-  c.addView(copyButton("COPY ALL","""METHOD: ${cap.method}
-STATUS: ${cap.status}
-URL: ${cap.url}
-
-HEADERS:
-${cap.headers}
-
-REQUEST HEX:
-${cap.requestHex}
-
-RESPONSE HEX:
-${cap.responseHex}
-
-REQUEST BYTES: ${cap.requestBytes}
-RESPONSE BYTES: ${cap.responseBytes}"""))
-
-  c.addView(button("SAVE TO FILE"){
-    pendingSaveText="""METHOD: ${cap.method}
-STATUS: ${cap.status}
-URL: ${cap.url}
-
-HEADERS:
-${cap.headers}
-
-REQUEST HEX:
-${cap.requestHex}
-
-RESPONSE HEX:
-${cap.responseHex}
-
-REQUEST BYTES: ${cap.requestBytes}
-RESPONSE BYTES: ${cap.responseBytes}
-"""
-    val safeName=cap.method.lowercase(Locale.US)+"_capture.txt"
-    startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply{
-      addCategory(Intent.CATEGORY_OPENABLE)
-      type="text/plain"
-      putExtra(Intent.EXTRA_TITLE,safeName)
-    },2001)
-  })
-
-  addTextTo(c,"HTTPS payload remains encrypted; only tunnel metadata and byte counts are shown.",10f,MUTED)
-  content.addView(c)
+ private fun stopProxy(){
+  stopService(Intent(this,ProxyService::class.java).apply{action=ProxyService.ACTION_STOP})
+  proxyRunning=false
+  deleteLocalConfig()
+  refreshCurrentScreen()
  }
 
  private fun copyButton(title:String,value:String):Button=button(title){
@@ -220,7 +160,44 @@ RESPONSE BYTES: ${cap.responseBytes}
  private var lastDecodedBytes=ByteArray(0)
  private fun showDecoded(b:ByteArray,push:Boolean=true){lastDecodedBytes=b;if(push&&currentScreen!="DECODED")screenStack.addLast(currentScreen);currentScreen="DECODED";reset("PROTOBUF DECODER","Decoded byte content");val c=card();addTextTo(c,"DECODED / FALLBACK",12f,CYAN,true);addTextTo(c,b.toString(Charsets.UTF_8).ifBlank{"—"},12f,TEXT);addTextTo(c,"HEX",12f,CYAN,true);addTextTo(c,hex(b,4096),10f,TEXT);content.addView(c);c.addView(button("COPY HEX"){val cm=getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager;cm.setPrimaryClip(android.content.ClipData.newPlainText("hex",hex(b,4096)));toast("Copied")})}
  private fun showUpdates(push:Boolean=true){if(push&&currentScreen!="UPDATES")screenStack.addLast(currentScreen);currentScreen="UPDATES";reset("UPDATES","App update information");val c=card();addTextTo(c,"You are up to date",22f,PURPLE,true);addTextTo(c,"Version 1.0 is the current build.",15f,TEXT);c.addView(button("CHECK AGAIN"){toast("No update endpoint configured")});content.addView(c)}
- private fun showAccount(push:Boolean=true){if(push&&currentScreen!="ACCOUNT")screenStack.addLast(currentScreen);currentScreen="ACCOUNT";reset("Settings","Background service, updates and capture controls");val c=card();addTextTo(c,"BACKGROUND PROXY",12f,CYAN,true);addTextTo(c,if(proxyRunning)"Running in foreground service" else "Stopped",16f,if(proxyRunning)GREEN else MUTED,true);c.addView(button(if(proxyRunning)"STOP BACKGROUND PROXY" else "START BACKGROUND PROXY"){if(proxyRunning)stopProxy() else startProxy()});c.addView(button(if(overlayEnabled)"DISABLE FLOATING CAPTURE" else "ENABLE FLOATING CAPTURE"){if(!android.provider.Settings.canDrawOverlays(this)){startActivity(Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,Uri.parse("package:$packageName")));toast("Allow display over other apps, then enable again")}else{overlayEnabled=!overlayEnabled;val a=Intent(this,ProxyService::class.java).apply{action=if(overlayEnabled)ProxyService.ACTION_OVERLAY_ON else ProxyService.ACTION_OVERLAY_OFF};startService(a);showAccount(false)}});c.addView(button("APP UPDATES") { showUpdates() });content.addView(c);val s=card();addTextTo(s,"HTTPS CAPTURE",12f,CYAN,true);addTextTo(s,"CONNECT tunnel support is enabled. HTTPS stays encrypted end-to-end; the app records destination metadata, status and byte counts without decrypting credentials.",12f,TEXT);addTextTo(s,"Traffic is persistent and is not automatically deleted.",12f,GREEN,true);content.addView(s);val p=card();addTextTo(p,"PROXY SETUP",12f,CYAN,true);addTextTo(p,"Host: 127.0.0.1    Port: $proxyPort",15f,TEXT,true);addTextTo(p,"Configure the device/app you control to use this HTTP proxy. HTTPS uses CONNECT tunneling.",12f,MUTED);content.addView(p);val a=card();addTextTo(a,"PROFILE",12f,CYAN,true);addTextTo(a,"Sulav Proxy Owner",20f,TEXT,true);addTextTo(a,"Local profile • Device bound",13f,MUTED);a.addView(button("CHANGE PHOTO"){startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply{type="image/*";addCategory(Intent.CATEGORY_OPENABLE)},1001)});content.addView(a)}
+ private fun showLocalConfig(push:Boolean=true){
+  if(push&&currentScreen!="LOCALCONFIG")screenStack.addLast(currentScreen)
+  currentScreen="LOCALCONFIG"
+  reset("Localconfig.json","Create a configuration file in a folder you choose.")
+  val c=card();label("CUSTOM JSON / TEXT")
+  val e=edit("Localconfig.json content",localConfigText,true);e.minLines=12;e.inputType=InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+  c.addView(e)
+  c.addView(button("VALIDATE JSON"){try{val t=e.text.toString().trim();if(t.startsWith("{"))org.json.JSONObject(t) else if(t.startsWith("["))org.json.JSONArray(t) else throw Exception("JSON must start with { or [");toast("Valid JSON")}catch(ex:Exception){toast("Invalid JSON: ${ex.message?:"error"}")}})
+  c.addView(button("CHOOSE FOLDER"){startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply{addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)},3001)})
+  c.addView(button("WRITE Localconfig.json"){localConfigText=e.text.toString();writeLocalConfig()})
+  c.addView(button("DELETE APP-CREATED CONFIG"){deleteLocalConfig()})
+  addTextTo(c,if(localConfigUri==null)"No folder selected" else "Folder selected • app-created file will be tracked",12f,MUTED)
+  content.addView(c)
+  addText("The app only writes to a folder you explicitly select with Android's document picker.",12f,MUTED,false,20,10)
+ }
+ private fun writeLocalConfig(){
+  val uri=localConfigUri
+  if(uri==null){toast("Choose a folder first");return}
+  try{
+   val doc=DocumentsContract.buildDocumentUriUsingTree(uri,DocumentsContract.getTreeDocumentId(uri))
+   val existing=DocumentsContract.buildChildDocumentsUriUsingTree(uri,DocumentsContract.getTreeDocumentId(uri))
+   var found:Uri?=null
+   contentResolver.query(existing,arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID,DocumentsContract.Document.COLUMN_DISPLAY_NAME),null,null,null)?.use{q->
+    val id=q.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID);val name=q.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+    while(q.moveToNext()){if(q.getString(name)=="Localconfig.json"){found=DocumentsContract.buildDocumentUriUsingTree(uri,q.getString(id));break}}
+   }
+   val out=found?:DocumentsContract.createDocument(contentResolver,doc,"application/json","Localconfig.json")
+   if(out==null)throw Exception("Cannot create file")
+   contentResolver.openOutputStream(out,"wt")!!.use{it.write(localConfigText.toByteArray(Charsets.UTF_8))}
+   localConfigUri=out;getPreferences(0).edit().putString("local_config_uri",out.toString()).apply();toast("Localconfig.json written")
+  }catch(ex:Exception){toast("Write failed: ${ex.message?:"error"}")}
+ }
+ private fun deleteLocalConfig(){
+  val u=localConfigUri
+  if(u==null){toast("No app-created config tracked");return}
+  try{DocumentsContract.deleteDocument(contentResolver,u);localConfigUri=null;getPreferences(0).edit().remove("local_config_uri").apply();toast("Localconfig.json removed")}catch(ex:Exception){toast("Delete failed: ${ex.message?:"error"}")}
+ }
+ private fun showAccount(push:Boolean=true){if(push&&currentScreen!="ACCOUNT")screenStack.addLast(currentScreen);currentScreen="ACCOUNT";reset("Settings","Background service, updates and capture controls");val c=card();addTextTo(c,"BACKGROUND PROXY",12f,CYAN,true);addTextTo(c,if(proxyRunning)"Running in foreground service" else "Stopped",16f,if(proxyRunning)GREEN else MUTED,true);c.addView(button(if(proxyRunning)"STOP BACKGROUND PROXY" else "START BACKGROUND PROXY"){if(proxyRunning)stopProxy() else startProxy()});c.addView(button(if(overlayEnabled)"DISABLE FLOATING CAPTURE" else "ENABLE FLOATING CAPTURE"){if(!android.provider.Settings.canDrawOverlays(this)){startActivity(Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,Uri.parse("package:$packageName")));toast("Allow display over other apps, then enable again")}else{overlayEnabled=!overlayEnabled;val a=Intent(this,ProxyService::class.java).apply{action=if(overlayEnabled)ProxyService.ACTION_OVERLAY_ON else ProxyService.ACTION_OVERLAY_OFF};startService(a);showAccount(false)}});c.addView(button("LOCALCONFIG.JSON EDITOR") { showLocalConfig() });c.addView(button("APP UPDATES") { showUpdates() });content.addView(c);val s=card();addTextTo(s,"HTTPS CAPTURE",12f,CYAN,true);addTextTo(s,"CONNECT tunnel support is enabled. HTTPS stays encrypted end-to-end; the app records destination metadata, status and byte counts without decrypting credentials.",12f,TEXT);addTextTo(s,"Traffic is persistent and is not automatically deleted.",12f,GREEN,true);content.addView(s);val p=card();addTextTo(p,"PROXY SETUP",12f,CYAN,true);addTextTo(p,"Host: 127.0.0.1    Port: $proxyPort",15f,TEXT,true);addTextTo(p,"Configure the device/app you control to use this HTTP proxy. HTTPS uses CONNECT tunneling.",12f,MUTED);content.addView(p);val a=card();addTextTo(a,"PROFILE",12f,CYAN,true);addTextTo(a,"Sulav Proxy Owner",20f,TEXT,true);addTextTo(a,"Local profile • Device bound",13f,MUTED);a.addView(button("CHANGE PHOTO"){startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply{type="image/*";addCategory(Intent.CATEGORY_OPENABLE)},1001)});content.addView(a)}
  private fun decodeHex(s:String):ByteArray{val c=s.replace("0x","",true).replace(Regex("[^0-9A-Fa-f]"),"");if(c.length%2!=0)return ByteArray(0);return ByteArray(c.length/2){i->c.substring(i*2,i*2+2).toInt(16).toByte()}}
  private fun hex(b:ByteArray,n:Int)=b.copyOfRange(0,minOf(b.size,n)).joinToString(" "){String.format("%02X",it)}
  private fun readAll(i:BufferedInputStream):ByteArray{val o=ByteArrayOutputStream();val b=ByteArray(8192);while(true){val n=i.read(b);if(n<=0)break;o.write(b,0,n)};return o.toByteArray()}

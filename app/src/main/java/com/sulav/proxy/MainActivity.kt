@@ -15,6 +15,7 @@ import android.text.InputType
 import android.view.Gravity
 import android.graphics.drawable.GradientDrawable
 import android.widget.*
+import androidx.activity.OnBackPressedCallback
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
@@ -43,6 +44,7 @@ class MainActivity:Activity(){
  private var localConfigText="{\n  \"serverLoginUrl\": \"http://127.0.0.1:8080/\"\n}"
  private var localConfigUri:Uri?=null
  private val mainHandler=Handler(Looper.getMainLooper())
+ 
  override fun onCreate(b:Bundle?){
   super.onCreate(b)
   window.statusBarColor=PURPLE
@@ -53,15 +55,19 @@ class MainActivity:Activity(){
   buildShell()
   screenStack.clear()
   showCapture(false)
- }
 
- @Suppress("DEPRECATION")
- override fun onBackPressed(){
-  if(handlingBack) return
-  handlingBack=true
-  try { handleBackNow() } finally {
-   mainHandler.postDelayed({ handlingBack=false }, 250L)
-  }
+  // Modern Back Dispatcher implementation
+  onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+   override fun handleOnBackPressed() {
+    if (handlingBack) return
+    handlingBack = true
+    try {
+     handleBackNow()
+    } finally {
+     mainHandler.postDelayed({ handlingBack = false }, 250L)
+    }
+   }
+  })
  }
 
  private fun handleBackNow(){
@@ -262,7 +268,7 @@ class MainActivity:Activity(){
   try{DocumentsContract.deleteDocument(contentResolver,u);localConfigUri=null;getPreferences(0).edit().remove("local_config_uri").apply();toast("Localconfig.json removed")}catch(ex:Exception){toast("Delete failed: ${ex.message?:"error"}")}
  }
  private fun showAccount(push:Boolean=true){if(push&&currentScreen!="ACCOUNT")screenStack.addLast(currentScreen);currentScreen="ACCOUNT";reset("Settings","Background service, updates and capture controls");val c=card();addTextTo(c,"BACKGROUND PROXY",12f,CYAN,true);addTextTo(c,if(proxyRunning)"Running in foreground service" else "Stopped",16f,if(proxyRunning)GREEN else MUTED,true);c.addView(button(if(proxyRunning)"STOP BACKGROUND PROXY" else "START BACKGROUND PROXY"){if(proxyRunning)stopProxy() else startProxy()});c.addView(button(if(overlayEnabled)"DISABLE FLOATING CAPTURE" else "ENABLE FLOATING CAPTURE"){if(!android.provider.Settings.canDrawOverlays(this)){startActivity(Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,Uri.parse("package:$packageName")));toast("Allow display over other apps, then enable again")}else{overlayEnabled=!overlayEnabled;val a=Intent(this,ProxyService::class.java).apply{action=if(overlayEnabled)ProxyService.ACTION_OVERLAY_ON else ProxyService.ACTION_OVERLAY_OFF};startService(a);showAccount(false)}});c.addView(button("LOCALCONFIG.JSON EDITOR") { showLocalConfig() });c.addView(button("APP UPDATES") { showUpdates() });content.addView(c);val s=card();addTextTo(s,"HTTPS CAPTURE",12f,CYAN,true);addTextTo(s,"CONNECT tunnel support is enabled. HTTPS stays encrypted end-to-end; the app records destination metadata, status and byte counts without decrypting credentials.",12f,TEXT);addTextTo(s,"Traffic is persistent and is not automatically deleted.",12f,GREEN,true);content.addView(s);val p=card();addTextTo(p,"PROXY SETUP",12f,CYAN,true);addTextTo(p,"Host: 127.0.0.1    Port: $proxyPort",15f,TEXT,true);addTextTo(p,"Configure the device/app you control to use this HTTP proxy. HTTPS uses CONNECT tunneling.",12f,MUTED);content.addView(p);val a=card();addTextTo(a,"PROFILE",12f,CYAN,true);addTextTo(a,"Sulav Proxy Owner",20f,TEXT,true);addTextTo(a,"Local profile • Device bound",13f,MUTED);a.addView(button("CHANGE PHOTO"){startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply{type="image/*";addCategory(Intent.CATEGORY_OPENABLE)},1001)});content.addView(a)}
- private fun decodeHex(s:String):ByteArray{val c=s.replace("0x","",true).replace(Regex("[^0-9A-Fa-f]"),"");if(c.length%2!=0)return ByteArray(0);return ByteArray(c.length/2){i->c.substring(i*2,i*2+2).toInt(16).toByte()}}
+ private fun decodeHex(s:String):ByteArray{val c=s.replace("0x","",true).replace(Regex("[^0-9A-Fa-f]",""));if(c.length%2!=0)return ByteArray(0);return ByteArray(c.length/2){i->c.substring(i*2,i*2+2).toInt(16).toByte()}}
  private fun hex(b:ByteArray,n:Int)=b.copyOfRange(0,minOf(b.size,n)).joinToString(" "){String.format("%02X",it)}
  private fun readAll(i:BufferedInputStream):ByteArray{val o=ByteArrayOutputStream();val b=ByteArray(8192);while(true){val n=i.read(b);if(n<=0)break;o.write(b,0,n)};return o.toByteArray()}
  private fun toast(s:String)=Toast.makeText(this,s,Toast.LENGTH_SHORT).show();private fun dp(v:Int)=(v*resources.displayMetrics.density).toInt()

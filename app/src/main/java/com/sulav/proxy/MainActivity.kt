@@ -49,6 +49,7 @@ class MainActivity:Activity(){
   window.navigationBarColor=Color.BLACK
   target=getPreferences(0).getString("target",target)?:target
   getPreferences(0).getString("local_config_uri",null)?.let{runCatching{localConfigUri=Uri.parse(it)}}
+  if(localConfigUri==null)getPreferences(0).getString("local_config_tree",null)?.let{runCatching{localConfigUri=Uri.parse(it)}}
   buildShell()
   screenStack.clear()
   showCapture(false)
@@ -142,6 +143,17 @@ class MainActivity:Activity(){
 
  override fun onActivityResult(requestCode:Int,resultCode:Int,data:Intent?){
   super.onActivityResult(requestCode,resultCode,data)
+  if(requestCode==3001 && resultCode==RESULT_OK && data?.data!=null){
+   try{
+    localConfigUri=data.data
+    val flags=data.flags and (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+    contentResolver.takePersistableUriPermission(localConfigUri!!,flags)
+    getPreferences(0).edit().putString("local_config_tree",localConfigUri.toString()).apply()
+    toast("Folder selected")
+    if(currentScreen=="LOCALCONFIG")showLocalConfig(false)
+   }catch(e:Exception){toast("Folder access failed: ${e.message ?: "error"}")}
+   return
+  }
   if(requestCode==2001 && resultCode==RESULT_OK && data?.data!=null){
     val text=pendingSaveText ?: return
     try{
@@ -153,6 +165,58 @@ class MainActivity:Activity(){
       pendingSaveText=null
     }
   }
+ }
+ private fun refreshCurrentScreen(){
+  when(currentScreen){
+   "CAPTURE" -> showCapture(false)
+   "CAPTURE_LOG" -> showCaptureLog(false)
+   "DETAIL" -> showCaptureLog(false)
+   "REQUEST" -> showRequest(false)
+   "DECODER" -> showDecoder(false)
+   "DECODED" -> showDecoded(lastDecodedBytes,false)
+   "UPDATES" -> showUpdates(false)
+   "ACCOUNT" -> showAccount(false)
+   "LOCALCONFIG" -> showLocalConfig(false)
+   else -> showCapture(false)
+  }
+ }
+ private fun showCaptureLog(push:Boolean=true){
+  if(push&&currentScreen!="CAPTURE_LOG")screenStack.addLast(currentScreen)
+  currentScreen="CAPTURE_LOG"
+  reset("CAPTURED REQUESTS","Persistent local traffic history")
+  if(captures.isEmpty()){
+   addText("No captured requests yet.",14f,MUTED,false,20,18)
+   return
+  }
+  captures.asReversed().forEachIndexed{index,cap->
+   val c=card()
+   addTextTo(c,"${cap.method}  •  ${cap.status}",14f,if(cap.status in 200..399)GREEN else RED,true)
+   addTextTo(c,cap.url,12f,TEXT)
+   addTextTo(c,"Request ${cap.requestBytes} B  •  Response ${cap.responseBytes} B",11f,MUTED)
+   c.addView(button("VIEW DETAILS"){showDetail(cap)})
+   content.addView(c)
+  }
+ }
+ private fun showDetail(cap:Capture,push:Boolean=true){
+  if(push&&currentScreen!="DETAIL")screenStack.addLast(currentScreen)
+  currentScreen="DETAIL"
+  reset("REQUEST DETAIL",cap.method+"  •  "+cap.status)
+  val c=card()
+  addTextTo(c,"URL",11f,CYAN,true);addTextTo(c,cap.url,12f,TEXT)
+  c.addView(copyButton("COPY URL",cap.url))
+  addTextTo(c,"HEADERS",11f,CYAN,true);addTextTo(c,cap.headers.ifBlank{"—"},11f,TEXT)
+  c.addView(copyButton("COPY HEADERS",cap.headers))
+  addTextTo(c,"REQUEST HEX",11f,CYAN,true);addTextTo(c,cap.requestHex.ifBlank{"—"},10f,TEXT)
+  c.addView(copyButton("COPY REQUEST HEX",cap.requestHex))
+  addTextTo(c,"RESPONSE HEX",11f,CYAN,true);addTextTo(c,cap.responseHex.ifBlank{"—"},10f,TEXT)
+  c.addView(copyButton("COPY RESPONSE HEX",cap.responseHex))
+  c.addView(copyButton("COPY STATUS","${cap.method} ${cap.status} ${cap.url}"))
+  c.addView(button("COPY ALL"){
+   val all="URL: ${cap.url}\nMETHOD: ${cap.method}\nSTATUS: ${cap.status}\nHEADERS:\n${cap.headers}\nREQUEST HEX:\n${cap.requestHex}\nRESPONSE HEX:\n${cap.responseHex}"
+   val cm=getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+   cm.setPrimaryClip(android.content.ClipData.newPlainText("capture",all));toast("Copied all")
+  })
+  content.addView(c)
  }
  private fun showRequest(push:Boolean=true){if(push&&currentScreen!="REQUEST")screenStack.addLast(currentScreen);currentScreen="REQUEST";reset("REQUEST SEND","Send a request to an endpoint you control.");val c=card();label("REQUEST BLOCK");val m=Spinner(this).apply{adapter=ArrayAdapter(this@MainActivity,android.R.layout.simple_spinner_dropdown_item,arrayOf("GET","POST","PUT","DELETE"))};c.addView(m);val u=edit("URL",target);c.addView(u);val h=edit("Headers (Name: Value per line)","",true);c.addView(h);val body=edit("Payload / body","",true);c.addView(body);c.addView(button("SEND REQUEST"){sendRequest(m.selectedItem.toString(),u.text.toString().trim(),h.text.toString(),body.text.toString())});content.addView(c);addText("For safety, this sender does not extract authentication tokens or modify third-party game traffic.",12f,MUTED,false,20,12)}
  private fun sendRequest(method:String,urlText:String,headerText:String,bodyText:String){executor.execute{var conn:HttpURLConnection?=null;try{conn=URL(urlText).openConnection() as HttpURLConnection;conn!!.requestMethod=method;conn!!.connectTimeout=12000;conn!!.readTimeout=12000;headerText.lines().forEach{p->val i=p.indexOf(':');if(i>0)conn!!.setRequestProperty(p.substring(0,i).trim(),p.substring(i+1).trim())};if(method!="GET"&&method!="DELETE"){conn!!.doOutput=true;conn!!.outputStream.use{it.write(bodyText.toByteArray())}};val status=conn!!.responseCode;val stream=if(status>=400)conn!!.errorStream else conn!!.inputStream;val bytes=stream?.let{BufferedInputStream(it).use{inp->readAll(inp)}}?:ByteArray(0);val safe=headerText.lines().joinToString("\n"){if(it.lowercase(Locale.US).startsWith("authorization:"))"Authorization: [REDACTED]" else it};val cap=Capture(method,urlText,status,hex(bodyText.toByteArray(),512),hex(bytes,512),safe);synchronized(captures){captures.add(cap)};runOnUiThread{updatePacketCount();toast("Response $status");if(currentScreen=="REQUEST")showDetail(cap)}}catch(e:Exception){runOnUiThread{toast("Request failed: ${e.message?:"error"}")}}finally{conn?.disconnect()}}}
